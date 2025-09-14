@@ -9,4 +9,4 @@ spec:
     app: bookmyshow
   ports:
     - port: 80        # external port
-      targetPort: 3000 # container port
+      targetPort: 80 # container port
