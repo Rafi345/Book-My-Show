@@ -112,7 +112,7 @@ pipeline {
                       "Build Number: ${env.BUILD_NUMBER}<br/>" +
                       "URL: ${env.BUILD_URL}<br/>",
                 to: 'rafishaik0066@gmail.com',
-                debug: true
+                // debug: true
                 
         }
     }
