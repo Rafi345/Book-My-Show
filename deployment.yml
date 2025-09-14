@@ -3,6 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: bookmyshow-deployment
+  namespace: rafi-namespace
 spec:
   replicas: 1
   selector:
