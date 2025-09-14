@@ -18,4 +18,4 @@ spec:
         - name: bookmyshow-container
           image: rafi345/bms:latest   # initial image, pipeline will update
           ports:
-            - containerPort: 3000
+            - containerPort: 80
