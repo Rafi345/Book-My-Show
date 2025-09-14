@@ -15,6 +15,6 @@ spec:
     spec:
       containers:
         - name: bookmyshow-container
-          image: rafi345/bookmyshow:v1   # initial image, pipeline will update
+          image: rafi345/bms:latest   # initial image, pipeline will update
           ports:
             - containerPort: 3000
