@@ -1,130 +1,105 @@
 pipeline {
     agent any
-
-    // Tools installed via Jenkins Global Tool Configuration
     tools {
-        nodejs "NodeJS"                // NodeJS configured in Jenkins
         
+        nodejs 'node24'
     }
-
     environment {
-        DOCKERHUB_USER   = 'rafi345'                    // DockerHub username
-        APP_NAME         = 'bookmyshow'                 // App name
-        IMAGE_TAG        = "v${BUILD_NUMBER}"           // Unique tag per build
-        DOCKERHUB_CREDS  = 'dockerhub-creds'           // Jenkins DockerHub credentials ID
-        // SONAR_HOST     = 'http://35.180.109.34:9000'   
-        // SONAR_SERVER     = 'SonarQube'              
-        // SONAR_TOKEN      = credentials('sonar-token')  // Jenkins secret text credential
-        AWS_REGION       = 'eu-west-3'                 // EKS region
-        CLUSTER_NAME     = 'batch4-team2-eks-cluster'  // EKS cluster name
+        SCANNER_HOME = tool 'sonar-scanner'
     }
-
     stages {
         stage('Clean Workspace') {
-            steps { cleanWs() }
-        }
-
-    stage('Checkout Code') {
-        steps {
-            git branch: 'feature/update-readme',
-            url: 'https://github.com/Rafi345/Book-My-Show.git',
-            credentialsId: 'github_id' // add this if private repo
-    }
-}
-
-
-       stage('SonarQube Analysis') {
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    sh """
-                      /opt/sonar-scanner/bin/sonar-scanner \
-                      -Dsonar.projectKey=bookmyshow \
-                      -Dsonar.sources=${env.WORKSPACE} \
-                      -Dsonar.host.url=http://35.180.109.34:9000 \
-                      -Dsonar.login=$SONAR_TOKEN
-                    """
+                cleanWs()
+            }
+        }
+        stage('Checkout from Git') {
+            steps {
+                git branch: 'main', url: 'https://github.com/Rafi345/Book-My-Show.git'
+                sh 'ls -la'  // Verify files after checkout
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' 
+                    $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=bookmyshow \
+                    -Dsonar.projectKey=bookmyshow
+                    '''
                 }
             }
         }
-
-
-
-        // stage('Quality Gate') {
+        stage('Quality Gate') {
+            steps {
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token'
+                }
+            }
+        }
+        stage('Install Dependencies') {
+            steps {
+                sh '''
+                cd bookmyshow-app
+                ls -la  # Verify package.json exists
+                if [ -f package.json ]; then
+                    rm -rf node_modules package-lock.json  # Remove old dependencies
+                    npm install  # Install fresh dependencies
+                else
+                    echo "Error: package.json not found in bookmyshow-app!"
+                    exit 1
+                fi
+                '''
+            }
+        }
+        // stage('Trivy FS Scan') {
         //     steps {
-        //         waitForQualityGate abortPipeline: true
+        //         sh 'trivy fs . > trivyfs.txt'
         //     }
         // }
-
-        stage('Install Dependencies') {
-    steps {
-        dir('bookmyshow-app') {
-            sh 'npm install'
-        }
-    }
-}
-
-
         stage('Docker Build & Push') {
             steps {
-                dir('bookmyshow-app') {
-                withCredentials([usernamePassword(credentialsId: "${DOCKERHUB_CREDS}", usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh """
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh ''' 
                         echo "Building Docker image..."
-                        docker build -t ${DOCKERHUB_USER}/${APP_NAME}:${IMAGE_TAG} .
+                        docker build --no-cache -t rafi345/bms:latest -f bookmyshow-app/Dockerfile bookmyshow-app
 
-                        echo "Logging in to DockerHub..."
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-
-                        echo "Pushing image..."
-                        docker push ${DOCKERHUB_USER}/${APP_NAME}:${IMAGE_TAG}
-                    """
+                        echo "Pushing Docker image to registry..."
+                        docker push rafi345/bms:latest
+                        '''
+                    }
                 }
             }
-            }
-            
         }
-
-        stage('Deploy to Docker (Local)') {
+        stage('Deploy to Container') {
             steps {
-                sh """
-                    docker rm -f bms-app || true
-                    docker run -d --name bms-app -p 3000:3000 ${DOCKERHUB_USER}/${APP_NAME}:${IMAGE_TAG}
-                """
-            }
-        }
+                sh ''' 
+                echo "Stopping and removing old container..."
+                docker stop bms || true
+                docker rm bms || true
 
-        stage('Update Kubeconfig') {
-            steps {
-                sh "aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}"
-            }
-        }
+                echo "Running new container on port 3000..."
+                docker run -d --restart=always --name bms -p 3000:3000 rafi345/bms:latest
 
-        stage('Deploy to Kubernetes') {
-            steps {
-                sh """
-                    kubectl apply -f deployment.yaml
-                    kubectl apply -f service.yaml
-                    kubectl set image deployment/bookmyshow-deployment \
-                      bookmyshow-container=${DOCKERHUB_USER}/${APP_NAME}:${IMAGE_TAG} --record
+                echo "Checking running containers..."
+                docker ps -a
 
-                    kubectl rollout status deployment/bookmyshow-deployment
-                    kubectl get pods -o wide
-                    kubectl get svc -o wide
-                """
+                echo "Fetching logs..."
+                sleep 5  # Give time for the app to start
+                docker logs bms
+                '''
             }
         }
     }
-
     post {
-        success {
-            mail to: "rafishaik0066@gnail.com",
-                 subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                 body: "Build & deploy succeeded. Image: ${DOCKERHUB_USER}/${APP_NAME}:${IMAGE_TAG}"
-        }
-        failure {
-            mail to: "rafishaik0066@gmail.com",
-                 subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                 body: "Build failed. Check logs: ${env.BUILD_URL}"
+        always {
+            emailext attachLog: true,
+                subject: "'${currentBuild.result}'",
+                body: "Project: ${env.JOB_NAME}<br/>" +
+                      "Build Number: ${env.BUILD_NUMBER}<br/>" +
+                      "URL: ${env.BUILD_URL}<br/>",
+                to: 'rafishaik0066@gmail.com'
+                
         }
     }
 }
